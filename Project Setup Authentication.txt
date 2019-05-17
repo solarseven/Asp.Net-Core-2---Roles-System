@@ -1,0 +1,311 @@
+Source Tutorial: https://www.youtube.com/watch?v=cbtK3U2aOlg
+
+## PROJECT/Program.cs ##
+public class Program
+{
+	public static void Main(string[] args)
+	{
+		var host = CreateWebHostBuilder(args).Build();
+
+		using (var services = host.Services.CreateScope())
+		{
+			var dbContext = services.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+			var userMgr = services.ServiceProvider.GetRequiredService<UserManager<IdentityUser>>();
+			var roleMgr = services.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
+
+			dbContext.Database.Migrate();
+
+			var adminRole = new IdentityRole("Admin");
+
+			if (!dbContext.Roles.Any())
+			{
+				roleMgr.CreateAsync(adminRole).GetAwaiter().GetResult();
+			}
+
+			if (!dbContext.Users.Any(u => u.UserName == "admin"))
+			{
+				var adminUser = new IdentityUser
+				{
+					UserName = "admin@test.com",
+					Email = "admin@test.com"
+				};
+				var result = userMgr.CreateAsync(adminUser, "password").GetAwaiter().GetResult();
+				userMgr.AddToRoleAsync(adminUser, adminRole.Name).GetAwaiter().GetResult();
+			}
+		}
+
+		host.Run();
+	}
+	
+	public static IWebHostBuilder CreateWebHostBuilder(string[] args) =>
+            WebHost.CreateDefaultBuilder(args)
+                .UseStartup<Startup>();
+}
+** END **
+
+ADD "using Dependencies".
+
+
+
+## PROJECT/Startup.cs ##
+// After: " services.AddDbContext "
+// Replace: services.AddDefaultIdentity<IdentityUser>() With: -->
+services.AddIdentity<IdentityUser, IdentityRole>(options =>
+            {
+                options.Password.RequireDigit = false;
+                options.Password.RequireNonAlphanumeric = false;
+                options.Password.RequireUppercase = false;
+                options.Password.RequiredLength = 6;
+            })
+			
+			// After: " services.AddMvc() "
+			services.AddAuthorization();
+** END **
+
+
+
+ADD "New Empty File..." in "Controllers" name it "RolesController.cs"
+
+## PROJECT/Controllers/RolesController.cs ##
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Mvc;
+using Project.Data;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+
+namespace Project.Controllers
+{
+    [Authorize(Roles = "Admin")]
+    public class RolesController : Controller
+    {
+        private readonly UserManager<IdentityUser> _userManager;
+        private readonly ApplicationDbContext _context;
+        private readonly RoleManager<IdentityRole> _roleManager;
+
+        public RolesController(
+            ApplicationDbContext context,
+            UserManager<IdentityUser> userManager,
+            RoleManager<IdentityRole> roleManager)
+        {
+            _roleManager = roleManager;
+            _userManager = userManager;
+            _context = context;
+        }
+
+        public IActionResult Index()
+        {
+            var roles = _context.Roles.ToList();
+            var users = _context.Users.ToList();
+            var userRoles = _context.UserRoles.ToList();
+
+            var convertedUsers = users.Select(x => new UsersViewModel
+            {
+                Email = x.Email,
+                Roles = roles
+                    .Where(y => userRoles.Any(z => z.UserId == x.Id && z.RoleId == y.Id))
+                    .Select(y => new UsersRole
+                    {
+                        Name = y.NormalizedName
+                    })
+            });
+
+            return View(new DisplayViewModel
+            {
+                Roles = roles.Select(x => x.NormalizedName),
+                Users = convertedUsers
+            });
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> CreateUser(string email)
+        {
+            var user = new IdentityUser
+            {
+                UserName = email,
+                Email = email
+            };
+
+            await _userManager.CreateAsync(user, "password");
+
+            return RedirectToAction("Index");
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> CreateRole(RoleViewModel vm)
+        {
+            await _roleManager.CreateAsync(new IdentityRole { Name = vm.Name });
+
+            return RedirectToAction("Index");
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> UpdateUserRole(UpdateUserRoleViewModel vm)
+        {
+            var user = await _userManager.FindByEmailAsync(vm.UserEmail);
+
+            if (vm.Delete)
+                await _userManager.RemoveFromRoleAsync(user, vm.Role);
+            else
+                await _userManager.AddToRoleAsync(user, vm.Role);
+
+            return RedirectToAction("Index");
+        }
+    }
+
+    public class DisplayViewModel
+    {
+        public IEnumerable<string> Roles { get; set; }
+        public IEnumerable<UsersViewModel> Users { get; set; }
+    }
+
+    public class UsersViewModel
+    {
+        public string Email { get; set; }
+        public IEnumerable<UsersRole> Roles { get; set; }
+    }
+
+    public class UsersRole
+    {
+        public string Name { get; set; }
+    }
+
+    public class RoleViewModel
+    {
+        public string Name { get; set; }
+    }
+
+    public class UpdateUserRoleViewModel
+    {
+        public IEnumerable<UsersViewModel> Users { get; set; }
+        public IEnumerable<string> Roles { get; set; }
+
+        public string UserEmail { get; set; }
+        public string Role { get; set; }
+        public bool Delete { get; set; }
+    }
+}
+** END **
+
+ADD "using Dependencies".
+
+
+
+## PROJECT/Views/Shared/_Layout.cs ##
+@if (User.IsInRole("Admin"))
+{
+	<li class="nav-item">
+		<a class="nav-link text-dark" asp-area="" asp-controller="Roles" asp-action="Index">Admin</a>
+	</li>
+}
+** END **
+
+
+
+ADD "New Folder" in "Views" name it "Roles".
+ADD "New Empty File..." in "Roles" name it "Index.cshtml"
+
+## PROJECT/Views/Roles/Index.cshtml ##
+@model Project.Controllers.DisplayViewModel
+
+@{ }
+
+<div>
+    <h2>Create User</h2>
+    <div>
+        <form asp-controller="Roles" asp-action="CreateUser" method="post">
+            <label>User Email</label>
+            <input name="email" value="" />
+            <input type="submit" value="Create User" />
+        </form>
+    </div>
+</div>
+<div>
+    <div>
+        <h2>Role List</h2>
+        <ul>
+            @foreach (var role in Model.Roles)
+            {
+                <li>
+                    @role
+                </li>
+            }
+        </ul>
+    </div>
+    <partial name="_CreateRole" model="new Project.Controllers.RoleViewModel()">
+</div>
+<div>
+    <partial name="_AddUserToRole" model="new Project.Controllers.UpdateUserRoleViewModel() { Users = Model.Users, Roles = Model.Roles }">
+</div>
+** END **
+
+
+
+ADD "New Empty File..." in "Roles" name it "_CreateRole.cshtml"
+
+## PROJECT/Views/Roles/_CreateRole.cshtml ##
+@model Project.Controllers.RoleViewModel
+
+@{ }
+
+<div>
+    <form asp-controller="Roles" asp-action="CreateRole" method="post">
+        <label>Create new Role</label>
+        <input asp-for="Name" />
+        <input type="submit" value="Create" />
+    </form>
+</div>
+** END **
+
+
+
+ADD "New Empty File..." in "Roles" name it "_AddUserToRole.cshtml"
+
+## PROJECT/Views/Roles/_AddUserToRole.cshtml ##
+@model Project.Controllers.UpdateUserRoleViewModel
+
+@{
+}
+
+<div>
+    <form asp-controller="Roles" asp-action="UpdateUserRole" method="post">
+        <h2>Add User to Role</h2>
+        <ul>
+            @foreach (var user in Model.Users)
+            {
+                <li>
+                    <input type="radio" asp-for="UserEmail" value="@user.Email" />
+                    @user.Email
+                </li>
+                <li>
+                    <ul>
+                        @foreach (var role in user.Roles)
+                        {
+                            <li>
+                                @role.Name
+                            </li>
+                        }
+                    </ul>
+                </li>
+            }
+        </ul>
+        <h4>Roles to add</h4>
+        <ul>
+            @foreach (var role in Model.Roles)
+            {
+                <li>
+                    <input type="radio" asp-for="Role" value="@role" />
+                    @role
+                </li>
+            }
+        </ul>
+        <input type="submit" value="Add Role" />
+        <input type="hidden" asp-for="Delete" value="false" id="delete" />
+        <input type="submit" value="Delete Role" onclick="document.getElementById('delete').value = 'true'" />
+    </form>
+</div>
+** END **
+
+
+### EOF ###
